@@ -3,6 +3,8 @@ const {getConnection, sql} = require('../database/connection')
 const {sendMail} = require('../mail/transito')
 const {CrearPdf} = require('../mail/crearArchivoPdf')
 const {createSftp} = require('../mail/sftp')
+const {cerrarTrailer, registrarTaraCabezote} = require('../servicios/trailer')
+const {vgm} = require('../calculos/pesos')
 
 async function tiquete(){
    const pool = await getConnection();
@@ -167,13 +169,13 @@ async function createDespacho(req, res){
           (Placa, Conductor, Cedula, Producto, Planta, Cliente, 
            Destino, Transportadora, Fecha_Peso_Vacio, Hora_Peso_Vacio, 
            Fecha_Peso_Lleno, Hora_Peso_Lleno, Bruto, Tara, Neto, No_Tiquete, Operario, Nick_Operario, 
-           No_Shipment, No_Sello, No_R, No_Contenedor, Observaciones, Tara_Contenedor, Responsable, Neto_Contenedor, Fecha_Entrada)
+           No_Shipment, No_Sello, No_R, No_Contenedor, Observaciones, Tara_Contenedor, Responsable, Neto_Contenedor, Fecha_Entrada, Vgm)
           VALUES 
           (@Placa, @Conductor, @Cedula, @Producto, @Planta, @Cliente, 
            @Destino, @Transportadora, @Fecha_Peso_Vacio, @Hora_Peso_Vacio, 
            FORMAT(GETDATE(), 'yyyy-MM-dd'), FORMAT(GETDATE(), 'HH:mm'),
            @Bruto, @Tara, @Neto, @No_Tiquete, @Operario, @Nick_Operario, 
-           @No_Shipment, @No_Sello, @No_R, @No_Contenedor, @Observaciones, @Tara_Contenedor, @Responsable, @Neto_Contenedor, @Fecha_Entrada)`;
+           @No_Shipment, @No_Sello, @No_R, @No_Contenedor, @Observaciones, @Tara_Contenedor, @Responsable, @Neto_Contenedor, @Fecha_Entrada, @Vgm)`;
 
       const response = await pool.request()
           .input("Placa", sql.VarChar, placa)
@@ -200,6 +202,9 @@ async function createDespacho(req, res){
           .input("Tara_Contenedor", sql.Int, parseInt(tara_contenedor))
           .input("Responsable", sql.VarChar, responsable)
           .input("Neto_Contenedor", sql.Int, neto == 'NaN' || neto == null  || neto == 'null' ? 0: neto)
+          // VGM (SOLAS VI/2) = tara del contenedor + carga. Se persiste el valor
+          // emitido para que la reimpresion muestre lo declarado, no un recalculo.
+          .input('Vgm', sql.Int, vgm({ taraContenedor: tara_contenedor, neto }))
           .input(
             'Fecha_Entrada',
             sql.VarChar,
@@ -212,114 +217,24 @@ async function createDespacho(req, res){
           .query(query);
 
 
+          // Movimientos de trailer. La logica vive en servicios/trailer.js para
+          // que despachos e ingresos calculen exactamente igual.
           if (procesoRecoger == true) {
-            const checkTrailerQuery = `
-                       SELECT TOP 1 culminado
-                       FROM Trailers
-                       WHERE Trailer = @Trailer
-                       ORDER BY Fecha_Entrada DESC`; // Asumo que tienes una columna de fecha para ordenar
-        
-            const checkTrailer = await pool
-              .request()
-              .input('Trailer', sql.VarChar, n_R)
-              .query(checkTrailerQuery);
-            console.log('checkTrailer: ', checkTrailer);
-
-            if (checkTrailer.recordset.length > 0) {
-               const { culminado } = checkTrailer.recordset[0];
-         
-               console.log('mayor a cero');
-         
-               if (culminado == false) {
-                 // Si el proceso no ha culminado, no se hace nada
-                 const queryUpdateTrailer = `  update Trailers set Fecha_Salida = FORMAT(GETDATE(), 'yyyy-MM-dd'), Hora_Salida = FORMAT(GETDATE(), 'HH:mm'), Placa_Salida = @Placa, Peso_Salida= @Peso, taraCab2 = @tara , Culminado = 1  where Trailer = @Trailer and Culminado = 0`
-                 const updateTrailer = await pool
-                  .request()
-                  .input('Trailer', sql.VarChar, n_R)
-                  .input('Placa', sql.VarChar, placa)
-                  .input('peso', sql.Int, bruto)
-                  .input('tara', sql.Int, tara)
-
-
-                  .query(queryUpdateTrailer);
-                  console.log('checkTrailer: ', updateTrailer);
-               }
-             }
-          }else if(procesoDescargar == true){
-           
-          }else{
-            const checkTrailerQuery = `
-            SELECT TOP 1 *
-            FROM Trailers
-            WHERE Trailer = @Trailer
-            ORDER BY Fecha_Entrada DESC`; // Asumo que tienes una columna de fecha para ordenar
-
-            const checkTrailer = await pool
-               .request()
-               .input('Trailer', sql.VarChar, n_R)
-               .query(checkTrailerQuery);
-            console.log('checkTrailer: ', checkTrailer);
-
-            if (checkTrailer.recordset.length > 0) {
-               const {Peso_Entrada, Culminado,  taraCab1, taraCab2, Peso_Trailer} = checkTrailer.recordset[0];
-               console.log("checkTrailer.recordset[0]", checkTrailer.recordset[0]);
-               console.log('mayor a cero');
-               console.log('culminado', Culminado);
-               console.log('taraCab1', taraCab1);
-               console.log('taraCab2', taraCab2);
-               
-         
-               if (Culminado == false) {
-
-                  if(taraCab1 == null){
-                     console.log('Peso_Entrada', Peso_Entrada);
-                     console.log('taraCab1', taraCab1);
-                     console.log('Peso_Trailer', Peso_Trailer);
-                     const Trailer = parseInt(Peso_Entrada) - (parseInt(taraCab1) + parseInt(Peso_Trailer))
-                     // Si el proceso no ha culminado, no se hace nada
-                     const queryUpdateTrailer = `update Trailers set taraCab1 = @tara, Gross_Entrada = @Gross, Peso_Trailer = @peso where Trailer = @Trailer and Culminado = 0`
-                     const updateTrailer = await pool
-                      .request()
-                      .input('Trailer', sql.VarChar, n_R)
-                      .input('Placa', sql.VarChar, placa)
-                      .input('peso', sql.Int, Trailer)
-                      .input('Gross', sql.Int, bruto)
-                      .input('tara', sql.Int, tara)
-    
-    
-    
-                      .query(queryUpdateTrailer);
-                      console.log('checkTrailer: ', updateTrailer);
-                  } else {
-                     console.log('Peso_Entrada', Peso_Entrada);
-                     console.log('taraCab1', taraCab1);
-                     console.log('Peso_Trailer', Peso_Trailer);
-
-
-                     const Trailer = parseInt(Peso_Entrada) - (parseInt(taraCab1) + parseInt(Peso_Trailer))
-                     // Si el proceso no ha culminado, no se hace nada
-                     const queryUpdateTrailer = `update Trailers set taraCab2 = @tara, Gross_Entrada = @Gross, Peso_Trailer = @peso where Trailer = @Trailer and Culminado = 0`
-                     const updateTrailer = await pool
-                      .request()
-                      .input('Trailer', sql.VarChar, n_R)
-                      .input('Placa', sql.VarChar, placa)
-                      .input('peso', sql.Int, Trailer)
-                      .input('Gross', sql.Int, bruto)
-                      .input('tara', sql.Int, tara)
-    
-    
-    
-                      .query(queryUpdateTrailer);
-                      console.log('checkTrailer: ', updateTrailer);
-                  }
-
-                
-               }
-            }
-
+             // Se lleva el trailer: el peso del conjunto a la salida es el bruto.
+             await cerrarTrailer(pool, {
+                trailer: n_R,
+                placa,
+                pesoConjuntoSalida: bruto,
+             });
+          } else if (procesoDescargar == true) {
+             // La fila del trailer se crea en el primer pesaje (transito).
+          } else {
+             // Cabezote pesado solo: alimenta una de las dos determinaciones.
+             await registrarTaraCabezote(pool, {
+                trailer: n_R,
+                taraCabezote: tara,
+             });
           }
-
-
 
       if(response.rowsAffected){
          console.log("response", response);

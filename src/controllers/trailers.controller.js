@@ -1,4 +1,5 @@
 const { getConnection, sql } = require('../database/connection');
+const { conCalculos } = require('../calculos/pesos');
 
 async function getTrailer(req, res) {
   const pool = await getConnection();
@@ -8,14 +9,14 @@ async function getTrailer(req, res) {
     .query(
       'SELECT TOP (1) * From Trailers where Trailer = @Trailer order by Fecha_Entrada desc'
     );
-  const response = result.recordset;
+  const response = result.recordset.map(conCalculos);
   res.json(response);
 }
 
 async function get100Trailers(req, res){
   const pool = await getConnection();
   const result = await pool.request().query('SELECT TOP (100) * FROM Trailers order by Fecha_Entrada desc')
-  const response = result.recordset
+  const response = result.recordset.map(conCalculos)
   res.json(response)
 }
 
@@ -39,7 +40,7 @@ async function getTrailer2(req, res) {
         proceso == 'Recoger_Trailer' ? 'Fecha_Salida' : 'Fecha_Entrada'
       } = @fecha order by Fecha_Entrada desc`
     );
-  const response = result.recordset;
+  const response = result.recordset.map(conCalculos);
   res.json(response);
 }
 
@@ -54,8 +55,7 @@ const getTrailerByDate = async  (req, res) => {
          .input("fechaFinal", sql.VarChar, fechaFinal)
          .input("Valor", sql.VarChar, valor)
          .query(query)
-         const response = result.recordset
-         console.log(response)
+         const response = result.recordset.map(conCalculos)
          res.json(response)
 }
 

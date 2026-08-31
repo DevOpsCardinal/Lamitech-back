@@ -1,4 +1,5 @@
 const { getConnection, sql } = require('../database/connection');
+const { entero } = require('../calculos/pesos');
 
 async function transito(req, res) {
   console.log('req.transito: ', req.body);
@@ -86,10 +87,10 @@ async function transito(req, res) {
 
     if (procesoDescargar == true) {
       const checkTrailerQuery = `
-                       SELECT TOP 1 culminado
+                       SELECT TOP 1 Culminado
                        FROM Trailers
                        WHERE Trailer = @Trailer
-                       ORDER BY Fecha_Entrada DESC`; // Asumo que tienes una columna de fecha para ordenar
+                       ORDER BY Fecha_Entrada DESC, Hora_Entrada DESC`;
 
       const checkTrailer = await pool
         .request()
@@ -98,11 +99,9 @@ async function transito(req, res) {
       console.log('checkTrailer: ', checkTrailer);
 
       if (checkTrailer.recordset.length > 0) {
-        const { culminado } = checkTrailer.recordset[0];
+        const { Culminado } = checkTrailer.recordset[0];
 
-        console.log('mayor a cero');
-
-        if (culminado == false) {
+        if (Culminado == false) {
           // Si el proceso no ha culminado, no se hace nada
           console.log('El proceso aún no ha culminado para este tráiler');
         } else {
@@ -145,7 +144,11 @@ async function transito(req, res) {
               ? 0
               : parseInt(tara_contenedor)
           ) // Añade más campos según tu necesidad
-          .input('Peso_Trailer', sql.Int, parseInt(tara_contenedor)) // Añade más campos según tu necesidad
+          // El peso del trailer ya no se siembra con la tara del contenedor: son
+          // dos magnitudes distintas y mezclarlas hacia que el front descontara la
+          // tara dos veces. Queda en null hasta que exista una determinacion real
+          // (Peso_Entrada - taraCab1), que se calcula al pesar el cabezote solo.
+          .input('Peso_Trailer', sql.Int, null)
           .input('Culminado', sql.Bit, 0) // Añade más campos según tu necesidad
           // Añade más campos según tu necesidad
           .query(insertTrailerQuery);
@@ -191,7 +194,11 @@ async function transito(req, res) {
             ? 0
             : parseInt(tara_contenedor)
           ) // Añade más campos según tu necesidad
-          .input('Peso_Trailer', sql.Int, parseInt(tara_contenedor)) // Añade más campos según tu necesidad
+          // El peso del trailer ya no se siembra con la tara del contenedor: son
+          // dos magnitudes distintas y mezclarlas hacia que el front descontara la
+          // tara dos veces. Queda en null hasta que exista una determinacion real
+          // (Peso_Entrada - taraCab1), que se calcula al pesar el cabezote solo.
+          .input('Peso_Trailer', sql.Int, null)
           .input('Culminado', sql.Bit, 0) // Añade más campos según tu necesidad
           // Añade más campos según tu necesidad
           .query(insertTrailerQuery);
