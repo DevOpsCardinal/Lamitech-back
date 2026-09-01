@@ -11,7 +11,8 @@ const { sql } = require('../database/connection');
 const {
   aplicarTaraVehiculo,
   aplicarSalida,
-  hayContenedor,
+  conCalculos,
+  entero,
 } = require('../calculos/pesos');
 
 /*
@@ -70,16 +71,13 @@ const SET_DERIVADAS = `taraCab1             = @taraCab1,
 /*
  * El vehiculo se peso solo, sin trailer.
  */
-async function registrarTaraVehiculo(pool, { trailer, taraVehiculo, noContenedor }) {
+async function registrarTaraVehiculo(pool, { trailer, taraVehiculo }) {
   if (!trailer) return null;
 
   const fila = await trailerAbierto(pool, trailer);
   if (!fila) return null;
 
-  const resultado = aplicarTaraVehiculo(fila, {
-    taraVehiculo,
-    conCarga: hayContenedor(noContenedor),
-  });
+  const resultado = aplicarTaraVehiculo(fila, { taraVehiculo });
 
   await peticionDerivadas(pool, trailer, resultado)
     .query(`UPDATE Trailers SET ${SET_DERIVADAS} ${FILTRO_FILA}`);
@@ -95,7 +93,6 @@ async function cerrarTrailer(pool, {
   placa,
   pesoConjuntoSalida,
   taraVehiculoSalida,
-  noContenedor,
 }) {
   if (!trailer) return null;
 
@@ -106,7 +103,6 @@ async function cerrarTrailer(pool, {
     placa,
     pesoConjunto: pesoConjuntoSalida,
     taraVehiculo: taraVehiculoSalida,
-    conCarga: hayContenedor(noContenedor),
   });
 
   await peticionDerivadas(pool, trailer, resultado)
@@ -124,8 +120,65 @@ async function cerrarTrailer(pool, {
   return resultado;
 }
 
+/*
+ * Menor determinacion registrada para el trailer en viajes ya cerrados.
+ *
+ * Un trailer nunca pesa menos que vacio, asi que el minimo historico es la
+ * mejor estimacion de su tara cuando el viaje en curso todavia no da una
+ * determinacion limpia. Solo mira viajes culminados: la fila abierta puede
+ * traer una unica determinacion contaminada por la mercancia.
+ */
+async function pesoTrailerHistorico(pool, trailer) {
+  if (!trailer) return null;
+
+  const resultado = await pool
+    .request()
+    .input('Trailer', sql.VarChar, trailer)
+    .query(`SELECT MIN(determinacion) AS Peso
+              FROM (SELECT Peso_Trailer_Entrada AS determinacion
+                      FROM Trailers
+                     WHERE Trailer = @Trailer AND Culminado = 1
+                    UNION ALL
+                    SELECT Peso_Trailer_Salida
+                      FROM Trailers
+                     WHERE Trailer = @Trailer AND Culminado = 1) AS d
+             WHERE determinacion IS NOT NULL
+               AND determinacion > 0`);
+
+  return entero(resultado.recordset[0]?.Peso);
+}
+
+/*
+ * Peso de trailer a descontar del neto de un movimiento.
+ *
+ * Al RECOGER, el viaje en curso ya trae la determinacion del extremo en que se
+ * dejo el trailer, asi que sirve. Al DESCARGAR no: la unica determinacion del
+ * viaje es la de este mismo movimiento, que incluye la mercancia, y hay que
+ * recurrir al historico del trailer.
+ *
+ * Cuando hay las dos se toma la menor, que es la que mas se acerca al trailer
+ * vacio.
+ */
+async function pesoTrailerParaCarga(pool, { trailer, usarViajeEnCurso }) {
+  if (!trailer) return null;
+
+  const historico = await pesoTrailerHistorico(pool, trailer);
+  if (!usarViajeEnCurso) return historico;
+
+  // conCalculos recalcula el promedio desde las determinaciones en vez de
+  // confiar en la columna, que en filas viejas trae la formula recursiva.
+  const fila = await trailerAbierto(pool, trailer);
+  const enCurso = entero(conCalculos(fila)?.Peso_Trailer);
+
+  if (enCurso === null) return historico;
+  if (historico === null) return enCurso;
+  return Math.min(enCurso, historico);
+}
+
 module.exports = {
   trailerAbierto,
   registrarTaraVehiculo,
   cerrarTrailer,
+  pesoTrailerHistorico,
+  pesoTrailerParaCarga,
 };

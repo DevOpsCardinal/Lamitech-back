@@ -2,39 +2,56 @@
    Verificacion de QA - ejecutar DESPUES de cada caso de prueba manual.
    Solo lectura. Requiere las migraciones 001 y 002 aplicadas.
    Reemplazar 'R-QA-01' por el numero de trailer usado.
+
+   El modelo que se valida aqui:
+     - Las dos determinaciones del viaje se guardan SIEMPRE en crudo.
+     - Si concuerdan dentro de la tolerancia, el trailer viajo vacio en
+       los dos extremos y Peso_Trailer es su promedio.
+     - Si difieren mas que la tolerancia, uno de los extremos llevaba
+       mercancia y Peso_Trailer es la MENOR de las dos.
    ===================================================================== */
 
-DECLARE @Trailer VARCHAR(50) = 'R-QA-01';
+DECLARE @Trailer    VARCHAR(50) = 'R-QA-01';
+DECLARE @Tolerancia INT = 200;   /* debe coincidir con TOLERANCIA_KG en src/calculos/pesos.js */
 
-/* --- 1. Estado del trailer ------------------------------------------
-   Peso_Trailer debe ser el promedio de las determinaciones GUARDADAS.
-   Un extremo que iba cargado no aporta determinacion y su columna queda
-   en NULL a proposito: con el trailer lleno la resta deja trailer mas
-   mercancia y no hay forma de separarlas con un solo pesaje. */
+/* --- 1. Estado del trailer ------------------------------------------ */
+WITH t AS (
+  SELECT *,
+         CASE
+           WHEN Peso_Trailer_Entrada IS NOT NULL AND Peso_Trailer_Salida IS NOT NULL
+             THEN CASE
+                    WHEN ABS(Peso_Trailer_Entrada - Peso_Trailer_Salida) <= @Tolerancia
+                      /* +1 antes de dividir para redondear hacia arriba igual
+                         que Math.round en JS; la division entera de SQL Server
+                         trunca y con una suma impar daria un kilo de menos. */
+                      THEN (Peso_Trailer_Entrada + Peso_Trailer_Salida + 1) / 2
+                    ELSE CASE WHEN Peso_Trailer_Entrada < Peso_Trailer_Salida
+                              THEN Peso_Trailer_Entrada ELSE Peso_Trailer_Salida END
+                  END
+           ELSE COALESCE(Peso_Trailer_Entrada, Peso_Trailer_Salida)
+         END AS Peso_Esperado
+  FROM dbo.Trailers
+  WHERE Trailer = @Trailer
+)
 SELECT  Trailer,
         Placa_Entrada, Peso_Entrada, taraCab1, Peso_Trailer_Entrada,
         Placa_Salida,  Peso_Salida,  taraCab2, Peso_Trailer_Salida,
-        Peso_Trailer  AS Promedio_Guardado,
+        Peso_Trailer AS Peso_Guardado,
+        Peso_Esperado,
         Diferencia_Determinaciones,
+        CASE
+          WHEN Peso_Trailer_Entrada IS NULL OR Peso_Trailer_Salida IS NULL THEN '-'
+          WHEN ABS(Peso_Trailer_Entrada - Peso_Trailer_Salida) <= @Tolerancia THEN 'ninguno'
+          WHEN Peso_Trailer_Entrada > Peso_Trailer_Salida THEN 'Entrada'
+          ELSE 'Salida'
+        END AS Extremo_Cargado,
         Culminado,
         CASE
-          WHEN Peso_Trailer_Entrada IS NOT NULL AND Peso_Trailer_Salida IS NOT NULL
-            THEN (Peso_Trailer_Entrada + Peso_Trailer_Salida) / 2
-          ELSE COALESCE(Peso_Trailer_Entrada, Peso_Trailer_Salida)
-        END           AS Promedio_Esperado,
-        CASE
-          WHEN Peso_Trailer = CASE
-                 WHEN Peso_Trailer_Entrada IS NOT NULL AND Peso_Trailer_Salida IS NOT NULL
-                   THEN (Peso_Trailer_Entrada + Peso_Trailer_Salida) / 2
-                 ELSE COALESCE(Peso_Trailer_Entrada, Peso_Trailer_Salida)
-               END THEN 'SI'
-          WHEN Peso_Trailer IS NULL
-               AND Peso_Trailer_Entrada IS NULL
-               AND Peso_Trailer_Salida IS NULL THEN 'SI (sin determinar)'
+          WHEN Peso_Trailer = Peso_Esperado THEN 'SI'
+          WHEN Peso_Trailer IS NULL AND Peso_Esperado IS NULL THEN 'SI (sin determinar)'
           ELSE 'NO <<< REVISAR'
-        END           AS Coinciden
-FROM    dbo.Trailers
-WHERE   Trailer = @Trailer
+        END AS Coinciden
+FROM    t
 ORDER BY Fecha_Entrada DESC, Hora_Entrada DESC;
 
 /* --- 2. Una sola fila abierta por trailer ---------------------------
@@ -56,16 +73,21 @@ WHERE  Peso_Trailer <= 0
     OR Peso_Trailer_Salida  <= 0;
 
 /* --- 4. Carga y VGM del tiquete -------------------------------------
-   VGM = Tara_Contenedor + Carga, donde Carga ya descuenta el peso del
-   trailer en los movimientos de recoger. Sin contenedor no se declara
-   VGM y ambas columnas deben quedar en NULL o cero. */
+   VGM = Tara_Contenedor + Carga. Hay contenedor declarado cuando viene el
+   numero O cuando el operario digito la tara: escribir la tara, que se lee
+   del costado del contenedor, ya es declarar que hay uno.
+   Carga en NULL es legitima: significa que el trailer todavia no estaba
+   determinado y no se pudo separar la mercancia del equipo. */
 SELECT TOP (10)
        No_Tiquete, Placa, No_R, No_Contenedor, Fecha_Entrada AS Proceso,
        Neto, Carga, Tara_Contenedor, Vgm,
        CASE
-         WHEN LTRIM(RTRIM(ISNULL(No_Contenedor,''))) = ''
+         WHEN LTRIM(RTRIM(ISNULL(No_Contenedor,''))) = '' AND ISNULL(Tara_Contenedor,0) = 0
            THEN CASE WHEN Vgm IS NULL THEN 'SI (sin contenedor, sin VGM)'
                      ELSE 'NO <<< no deberia declarar VGM' END
+         WHEN Carga IS NULL
+           THEN CASE WHEN Vgm IS NULL THEN 'SI (carga indeterminable)'
+                     ELSE 'NO <<< VGM sin carga conocida' END
          WHEN Vgm = Tara_Contenedor + Carga THEN 'SI'
          ELSE 'NO <<< REVISAR'
        END AS Coinciden
@@ -76,38 +98,47 @@ SELECT TOP (10)
        No_Tiquete, Placa, No_R, No_Contenedor, Fecha_Entrada AS Proceso,
        Neto, Carga, Tara_Contenedor, Vgm,
        CASE
-         WHEN LTRIM(RTRIM(ISNULL(No_Contenedor,''))) = ''
+         WHEN LTRIM(RTRIM(ISNULL(No_Contenedor,''))) = '' AND ISNULL(Tara_Contenedor,0) = 0
            THEN CASE WHEN Vgm IS NULL THEN 'SI (sin contenedor, sin VGM)'
                      ELSE 'NO <<< no deberia declarar VGM' END
+         WHEN Carga IS NULL
+           THEN CASE WHEN Vgm IS NULL THEN 'SI (carga indeterminable)'
+                     ELSE 'NO <<< VGM sin carga conocida' END
          WHEN Vgm = Tara_Contenedor + Carga THEN 'SI'
          ELSE 'NO <<< REVISAR'
        END AS Coinciden
 FROM   dbo.Ingresos
 ORDER BY No_Tiquete DESC;
 
-/* --- 5. En los movimientos de recoger, la carga descuenta el trailer -
-   Carga debe ser Neto menos el peso del trailer del viaje. Si Carga es
-   igual al Neto en un Recoger_Trailer con contenedor, no se descontó. */
+/* --- 5. El trailer se descuenta cuando viaja en un solo pesaje ------
+   En Recoger_Trailer y Descargar_Trailer el Neto incluye el trailer. Si
+   Carga sigue siendo igual al Neto, no se descontó. */
 SELECT TOP (10)
-       d.No_Tiquete, d.No_R, d.No_Contenedor,
-       d.Neto, t.Peso_Trailer, d.Carga,
-       d.Neto - t.Peso_Trailer AS Carga_Esperada,
-       CASE WHEN d.Carga = d.Neto - t.Peso_Trailer THEN 'SI'
-            ELSE 'NO <<< REVISAR' END AS Coinciden
+       d.No_Tiquete, d.No_R, d.Fecha_Entrada AS Proceso,
+       d.Neto, d.Carga,
+       CASE WHEN d.Carga IS NULL THEN 'SI (trailer aun sin determinar)'
+            WHEN d.Carga < d.Neto THEN 'SI'
+            ELSE 'NO <<< no se descontó el trailer' END AS Coinciden
 FROM   dbo.Despachos d
-       JOIN dbo.Trailers t ON t.Trailer = d.No_R
-WHERE  d.Fecha_Entrada = 'Recoger_Trailer'
-  AND  LTRIM(RTRIM(ISNULL(d.No_Contenedor,''))) <> ''
-  AND  t.Peso_Trailer IS NOT NULL
+WHERE  d.Fecha_Entrada IN ('Recoger_Trailer', 'Descargar_Trailer')
 ORDER BY d.No_Tiquete DESC;
 
 /* --- 6. Seguimiento de la diferencia entre determinaciones ----------
-   Correr tras unas semanas. Sirve para fijar la tolerancia con cifras
-   reales. Solo aparecen los viajes con los dos extremos vacios, que son
-   los unicos que producen dos determinaciones. */
-SELECT  COUNT(*)                        AS Viajes_Con_Dos_Determinaciones,
+   Correr tras unas semanas: es lo que permite fijar la tolerancia con
+   cifras reales en vez de con el estimado de 200 kg.
+
+   Los viajes por debajo de la tolerancia son los que se dieron por vacios
+   en los dos extremos. Si aparecen muchos justo por debajo del limite,
+   la tolerancia esta alta y se estan tragando cargas pequenas. */
+SELECT  CASE WHEN Diferencia_Determinaciones <= @Tolerancia
+             THEN 'Dentro de tolerancia (vacio)'
+             ELSE 'Fuera de tolerancia (un extremo cargado)' END AS Grupo,
+        COUNT(*)                        AS Viajes,
         MIN(Diferencia_Determinaciones) AS Diferencia_Minima,
         AVG(Diferencia_Determinaciones) AS Diferencia_Promedio,
         MAX(Diferencia_Determinaciones) AS Diferencia_Maxima
 FROM    dbo.Trailers
-WHERE   Diferencia_Determinaciones IS NOT NULL;
+WHERE   Diferencia_Determinaciones IS NOT NULL
+GROUP BY CASE WHEN Diferencia_Determinaciones <= @Tolerancia
+              THEN 'Dentro de tolerancia (vacio)'
+              ELSE 'Fuera de tolerancia (un extremo cargado)' END;

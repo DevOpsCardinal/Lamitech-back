@@ -3,7 +3,7 @@ const {getConnection, sql} = require('../database/connection')
 const {sendMail} = require('../mail/transito')
 const {CrearPdf} = require('../mail/crearArchivoPdf')
 const {createSftp} = require('../mail/sftp')
-const {cerrarTrailer, registrarTaraVehiculo, trailerAbierto} = require('../servicios/trailer')
+const {cerrarTrailer, registrarTaraVehiculo, pesoTrailerParaCarga} = require('../servicios/trailer')
 const {vgm, cargaReal} = require('../calculos/pesos')
 
 
@@ -144,13 +144,19 @@ async function createIngreso(req, res){
 
       const { bruto, tara, neto, operario, nickOperario, fechaIngreso, horaIngreso, procesoRecoger, procesoDescargar } = req.body;
 
-      // El VGM descuenta el peso del trailer cuando el vehiculo entro sin el y
-      // sale con el, asi que hay que conocerlo antes de insertar el tiquete.
+      // El trailer viaja en uno solo de los dos pesajes: el vehiculo entra sin
+      // el y sale con el (recoger) o al reves (descargar). En ambos casos el
+      // neto incluye el peso del trailer y hay que descontarlo, asi que hay que
+      // conocerlo antes de insertar el tiquete.
+      const netoIncluyeTrailer = procesoRecoger == true || procesoDescargar == true;
+
       let pesoTrailerConocido = null;
-      if (procesoRecoger == true) {
+      if (netoIncluyeTrailer) {
          try {
-            const filaTrailer = await trailerAbierto(pool, n_R);
-            pesoTrailerConocido = filaTrailer?.Peso_Trailer ?? null;
+            pesoTrailerConocido = await pesoTrailerParaCarga(pool, {
+               trailer: n_R,
+               usarViajeEnCurso: procesoRecoger == true,
+            });
          } catch (errorTrailer) {
             console.error('No se pudo leer el peso del trailer:', errorTrailer);
          }
@@ -159,8 +165,7 @@ async function createIngreso(req, res){
       const cargaDelMovimiento = cargaReal({
          neto,
          pesoTrailer: pesoTrailerConocido,
-         recogeTrailer: procesoRecoger == true,
-         noContenedor: n_contenedor,
+         incluyeTrailer: netoIncluyeTrailer,
       });
 
       const query = `
@@ -234,18 +239,17 @@ async function createIngreso(req, res){
                    placa,
                    pesoConjuntoSalida: tara,
                    taraVehiculoSalida: bruto,
-                   noContenedor: n_contenedor,
                 });
-             } else if (procesoDescargar == true) {
-                // La fila del trailer se crea en el primer pesaje (transito).
              } else {
-                // Vehiculo pesado solo: alimenta una determinacion, salvo que
-                // el trailer llevara contenedor, porque entonces la resta deja
-                // trailer + mercancia y no se pueden separar.
+                // El vehiculo se peso solo: su tara alimenta la determinacion que
+                // este libre. Incluye el caso de DESCARGAR, donde el vehiculo
+                // llego con el trailer y sale sin el -antes esta rama no hacia
+                // nada y el extremo de entrada se quedaba sin determinar, asi
+                // que al recogerlo despues no habia con que descontar el
+                // trailer y el tiquete salia en blanco.
                 await registrarTaraVehiculo(pool, {
                    trailer: n_R,
                    taraVehiculo: tara,
-                   noContenedor: n_contenedor,
                 });
              }
           } catch (errorTrailer) {
