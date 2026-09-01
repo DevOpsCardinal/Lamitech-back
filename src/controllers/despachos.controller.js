@@ -204,7 +204,7 @@ async function createDespacho(req, res){
           .input("Neto_Contenedor", sql.Int, neto == 'NaN' || neto == null  || neto == 'null' ? 0: neto)
           // VGM (SOLAS VI/2) = tara del contenedor + carga. Se persiste el valor
           // emitido para que la reimpresion muestre lo declarado, no un recalculo.
-          .input('Vgm', sql.Int, vgm({ taraContenedor: tara_contenedor, neto }))
+          .input('Vgm', sql.Int, vgm({ taraContenedor: tara_contenedor, neto, noContenedor: n_contenedor }))
           .input(
             'Fecha_Entrada',
             sql.VarChar,

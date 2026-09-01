@@ -71,11 +71,25 @@ function diferenciaDeterminaciones(trailer) {
 }
 
 /*
+ * Hay contenedor cuando el movimiento trae numero de contenedor. Un trailer
+ * que entra o sale vacio no lo tiene.
+ */
+function hayContenedor(noContenedor) {
+  return String(noContenedor ?? '').trim() !== '';
+}
+
+/*
  * VGM - Verified Gross Mass, SOLAS capitulo VI regla 2.
  * Es la masa del contenedor lleno: tara del contenedor mas la carga que lleva.
  * No incluye cabezote ni trailer.
+ *
+ * Sin numero de contenedor no hay nada que declarar y se devuelve null. Antes
+ * se emitia un VGM tambien en los movimientos de trailer vacio, donde la tara
+ * del contenedor llega en cero y el resultado terminaba siendo el peso del
+ * trailer presentado como masa declarada.
  */
-function vgm({ taraContenedor, neto }) {
+function vgm({ taraContenedor, neto, noContenedor }) {
+  if (!hayContenedor(noContenedor)) return null;
   const tara = entero(taraContenedor);
   const carga = entero(neto);
   if (tara === null || carga === null) return null;
@@ -104,6 +118,7 @@ function conCalculos(trailer) {
 
 module.exports = {
   entero,
+  hayContenedor,
   determinacionEntrada,
   determinacionSalida,
   pesoTrailer,

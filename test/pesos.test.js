@@ -128,14 +128,26 @@ verificar('pesos como string se interpretan igual',
 /* --------------------------------------------------------------- */
 grupo('VGM (SOLAS cap. VI regla 2) = tara del contenedor + carga');
 
-verificar('caso normal', vgm({ taraContenedor: 4000, neto: 22000 }), 26000);
+const CONT = 'MSCU1234567';
+
+verificar('caso normal', vgm({ taraContenedor: 4000, neto: 22000, noContenedor: CONT }), 26000);
 verificar('no incluye cabezote ni trailer: solo suma los dos valores',
-  vgm({ taraContenedor: 3800, neto: 0 }), 3800);
+  vgm({ taraContenedor: 3800, neto: 0, noContenedor: CONT }), 3800);
 verificar('sin tara de contenedor no se declara VGM',
-  vgm({ taraContenedor: null, neto: 22000 }), null);
+  vgm({ taraContenedor: null, neto: 22000, noContenedor: CONT }), null);
 verificar('sin neto no se declara VGM',
-  vgm({ taraContenedor: 4000, neto: null }), null);
-verificar('tara como string', vgm({ taraContenedor: '4000', neto: '22000' }), 26000);
+  vgm({ taraContenedor: 4000, neto: null, noContenedor: CONT }), null);
+verificar('tara como string',
+  vgm({ taraContenedor: '4000', neto: '22000', noContenedor: CONT }), 26000);
+
+// REGRESION: un movimiento de trailer vacio emitia un VGM igual al peso del
+// trailer, porque la tara del contenedor llegaba en cero y se sumaba al neto.
+verificar('REGRESION movimiento sin contenedor no declara VGM',
+  vgm({ taraContenedor: 0, neto: 11100, noContenedor: '' }), null);
+verificar('REGRESION contenedor nulo no declara VGM',
+  vgm({ taraContenedor: 0, neto: 11100, noContenedor: null }), null);
+verificar('REGRESION contenedor en blancos no declara VGM',
+  vgm({ taraContenedor: 4000, neto: 22000, noContenedor: '   ' }), null);
 
 /* --------------------------------------------------------------- */
 grupo('conCalculos: filas historicas anteriores a la migracion');
