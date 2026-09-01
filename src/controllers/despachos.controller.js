@@ -236,9 +236,11 @@ async function createDespacho(req, res){
                 // La fila del trailer se crea en el primer pesaje (transito).
              } else {
                 // Cabezote pesado solo: alimenta una de las dos determinaciones.
+                // En un despacho el pesaje que se acaba de hacer es el bruto
+                // (el segundo), no la tara, que viene arrastrada del transito.
                 await registrarTaraCabezote(pool, {
                    trailer: n_R,
-                   taraCabezote: tara,
+                   taraCabezote: bruto,
                 });
              }
           } catch (errorTrailer) {

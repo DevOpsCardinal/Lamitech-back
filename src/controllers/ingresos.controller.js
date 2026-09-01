@@ -218,6 +218,9 @@ async function createIngreso(req, res){
                 // La fila del trailer se crea en el primer pesaje (transito).
              } else {
                 // Cabezote pesado solo: alimenta una de las dos determinaciones.
+                // En un ingreso el pesaje que se acaba de hacer es la tara
+                // (el segundo); en un despacho es el bruto. De ahi la asimetria
+                // entre este controlador y despachos.controller.js.
                 await registrarTaraCabezote(pool, {
                    trailer: n_R,
                    taraCabezote: tara,
