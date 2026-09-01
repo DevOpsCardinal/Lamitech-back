@@ -39,18 +39,24 @@ async function trailerAbierto(pool, trailer) {
  * Acota el UPDATE a la fila leida. Con solo "Trailer = X AND Culminado = 0" un
  * trailer con filas abiertas duplicadas recibiria el update en todas.
  */
-function peticionSobreFila(pool, trailer, fila) {
-  return pool
-    .request()
-    .input('Trailer', sql.VarChar, trailer)
-    .input('Fecha_Entrada_Fila', sql.VarChar, fila.Fecha_Entrada)
-    .input('Hora_Entrada_Fila', sql.VarChar, fila.Hora_Entrada);
+function peticionSobreFila(pool, trailer) {
+  return pool.request().input('Trailer', sql.VarChar, trailer);
 }
 
+/*
+ * Acota el UPDATE a la fila abierta mas reciente. La fecha se resuelve dentro
+ * del propio SQL en vez de viajar como parametro: Fecha_Entrada puede ser DATE
+ * o VARCHAR segun como este declarada la tabla, y pasarla tipada rompia el
+ * movimiento con "Validation failed for parameter. Invalid string". CONCAT la
+ * normaliza a texto sea cual sea su tipo.
+ */
 const FILTRO_FILA = `WHERE Trailer = @Trailer
                        AND Culminado = 0
-                       AND Fecha_Entrada = @Fecha_Entrada_Fila
-                       AND Hora_Entrada = @Hora_Entrada_Fila`;
+                       AND CONCAT(Fecha_Entrada, ' ', Hora_Entrada) =
+                           (SELECT MAX(CONCAT(Fecha_Entrada, ' ', Hora_Entrada))
+                              FROM Trailers
+                             WHERE Trailer = @Trailer
+                               AND Culminado = 0)`;
 
 /*
  * Campos derivados a partir de como quedaria la fila tras el movimiento.
@@ -95,7 +101,7 @@ async function registrarTaraCabezote(pool, { trailer, taraCabezote }) {
 
   const calculo = derivados({ ...fila, [columna]: tara });
 
-  await conDerivados(peticionSobreFila(pool, trailer, fila), calculo)
+  await conDerivados(peticionSobreFila(pool, trailer), calculo)
     .input('Tara', sql.Int, tara)
     .query(`UPDATE Trailers
                SET ${columna} = @Tara,
@@ -120,7 +126,7 @@ async function cerrarTrailer(pool, { trailer, placa, pesoConjuntoSalida }) {
   const pesoSalida = entero(pesoConjuntoSalida);
   const calculo = derivados({ ...fila, Peso_Salida: pesoSalida });
 
-  await conDerivados(peticionSobreFila(pool, trailer, fila), calculo)
+  await conDerivados(peticionSobreFila(pool, trailer), calculo)
     .input('Placa', sql.VarChar, placa)
     .input('Peso_Salida', sql.Int, pesoSalida)
     .query(`UPDATE Trailers

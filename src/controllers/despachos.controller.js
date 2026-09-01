@@ -219,21 +219,30 @@ async function createDespacho(req, res){
 
           // Movimientos de trailer. La logica vive en servicios/trailer.js para
           // que despachos e ingresos calculen exactamente igual.
-          if (procesoRecoger == true) {
-             // Se lleva el trailer: el peso del conjunto a la salida es el bruto.
-             await cerrarTrailer(pool, {
-                trailer: n_R,
-                placa,
-                pesoConjuntoSalida: bruto,
-             });
-          } else if (procesoDescargar == true) {
-             // La fila del trailer se crea en el primer pesaje (transito).
-          } else {
-             // Cabezote pesado solo: alimenta una de las dos determinaciones.
-             await registrarTaraCabezote(pool, {
-                trailer: n_R,
-                taraCabezote: tara,
-             });
+          //
+          // Va en su propio try: el registro del trailer es auxiliar y un fallo
+          // aqui no debe tumbar el tiquete. Antes cualquier error se propagaba
+          // al catch general, el despacho quedaba insertado pero updateConteo no
+          // llegaba a correr y el consecutivo de tiquete se repetia.
+          try {
+             if (procesoRecoger == true) {
+                // Se lleva el trailer: el peso del conjunto a la salida es el bruto.
+                await cerrarTrailer(pool, {
+                   trailer: n_R,
+                   placa,
+                   pesoConjuntoSalida: bruto,
+                });
+             } else if (procesoDescargar == true) {
+                // La fila del trailer se crea en el primer pesaje (transito).
+             } else {
+                // Cabezote pesado solo: alimenta una de las dos determinaciones.
+                await registrarTaraCabezote(pool, {
+                   trailer: n_R,
+                   taraCabezote: tara,
+                });
+             }
+          } catch (errorTrailer) {
+             console.error('Error al registrar el movimiento de trailer:', errorTrailer);
           }
 
       if(response.rowsAffected){
