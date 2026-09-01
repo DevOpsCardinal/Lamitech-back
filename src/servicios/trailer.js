@@ -117,23 +117,45 @@ async function registrarTaraCabezote(pool, { trailer, taraCabezote }) {
  * solo; sobrescribirla con el peso del conjunto (lo que se hacia antes) dejaba
  * la determinacion de salida en cero.
  */
-async function cerrarTrailer(pool, { trailer, placa, pesoConjuntoSalida }) {
+async function cerrarTrailer(pool, {
+  trailer,
+  placa,
+  pesoConjuntoSalida,
+  taraCabezoteSalida,
+}) {
   if (!trailer) return null;
 
   const fila = await trailerAbierto(pool, trailer);
   if (!fila) return null;
 
   const pesoSalida = entero(pesoConjuntoSalida);
-  const calculo = derivados({ ...fila, Peso_Salida: pesoSalida });
+
+  /*
+   * taraCab2 se resuelve aqui y no en el pesaje de entrada del cabezote.
+   * Cuando un vehiculo entra a buscar trailer todavia no se sabe cual se va a
+   * llevar, asi que en ese momento no hay a que fila asociar su tara. Al salir
+   * si se sabe, y para entonces el propio movimiento ya trae sus dos pesajes:
+   * el conjunto con el trailer y el vehiculo solo. Si por alguna razon no
+   * llega, se conserva lo que hubiera en la fila.
+   */
+  const taraSalida = entero(taraCabezoteSalida) ?? entero(fila.taraCab2);
+
+  const calculo = derivados({
+    ...fila,
+    Peso_Salida: pesoSalida,
+    taraCab2: taraSalida,
+  });
 
   await conDerivados(peticionSobreFila(pool, trailer), calculo)
     .input('Placa', sql.VarChar, placa)
     .input('Peso_Salida', sql.Int, pesoSalida)
+    .input('taraCab2', sql.Int, taraSalida)
     .query(`UPDATE Trailers
                SET Fecha_Salida = FORMAT(GETDATE(), 'yyyy-MM-dd'),
                    Hora_Salida  = FORMAT(GETDATE(), 'HH:mm'),
                    Placa_Salida = @Placa,
                    Peso_Salida  = @Peso_Salida,
+                   taraCab2     = @taraCab2,
                    ${SET_DERIVADOS},
                    Culminado    = 1
              ${FILTRO_FILA}`);

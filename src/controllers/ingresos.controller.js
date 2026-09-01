@@ -207,12 +207,14 @@ async function createIngreso(req, res){
           // llegaba a correr y el consecutivo de tiquete se repetia.
           try {
              if (procesoRecoger == true) {
-                // Se lleva el trailer. En un ingreso el segundo pesaje es la tara,
-             // que aqui es el peso del conjunto cabezote + trailer al salir.
+                // Se lleva el trailer. En un ingreso los pesajes van al reves
+                // que en un despacho: el conjunto con trailer es la tara y el
+                // vehiculo solo es el bruto.
                 await cerrarTrailer(pool, {
                    trailer: n_R,
                    placa,
                    pesoConjuntoSalida: tara,
+                   taraCabezoteSalida: bruto,
                 });
              } else if (procesoDescargar == true) {
                 // La fila del trailer se crea en el primer pesaje (transito).

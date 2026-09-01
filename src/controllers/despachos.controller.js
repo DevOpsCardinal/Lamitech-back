@@ -226,11 +226,13 @@ async function createDespacho(req, res){
           // llegaba a correr y el consecutivo de tiquete se repetia.
           try {
              if (procesoRecoger == true) {
-                // Se lleva el trailer: el peso del conjunto a la salida es el bruto.
+                // Se lleva el trailer. En un despacho el conjunto con trailer
+                // es el bruto y el vehiculo solo es la tara.
                 await cerrarTrailer(pool, {
                    trailer: n_R,
                    placa,
                    pesoConjuntoSalida: bruto,
+                   taraCabezoteSalida: tara,
                 });
              } else if (procesoDescargar == true) {
                 // La fila del trailer se crea en el primer pesaje (transito).

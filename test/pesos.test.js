@@ -107,6 +107,19 @@ verificar('una determinacion invalida no arrastra el promedio',
   pesoTrailer({ Peso_Entrada: 18000, taraCab1: 7000, Peso_Salida: 18600, taraCab2: 18600 }), 11000);
 
 /* --------------------------------------------------------------- */
+grupo('REGRESION: el trailer que se lleva no se sabe hasta la salida');
+
+// Cuando un vehiculo entra a buscar trailer no se sabe cual se llevara, asi
+// que taraCab2 no puede registrarse en ese pesaje: se resuelve al salir, con
+// los dos pesajes que trae el propio movimiento.
+verificar('sin taraCab2 solo hay determinacion de entrada',
+  pesoTrailer({ Peso_Entrada: 18000, taraCab1: 7000, Peso_Salida: 18600 }), 11000);
+verificar('con taraCab2 resuelta en la salida ya promedia',
+  pesoTrailer({ Peso_Entrada: 18000, taraCab1: 7000, Peso_Salida: 18600, taraCab2: 7500 }), 11050);
+verificar('la determinacion de salida equivale al neto del movimiento',
+  determinacionSalida({ Peso_Salida: 18600, taraCab2: 7500 }), 18600 - 7500);
+
+/* --------------------------------------------------------------- */
 grupo('Tolerancia de tipos: SQL Server puede devolver texto');
 
 verificar('pesos como string se interpretan igual',
