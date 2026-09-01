@@ -1,19 +1,17 @@
 /*
  * Movimientos de la tabla Trailers.
  *
- * Antes esta logica estaba duplicada y divergente en despachos.controller.js y
- * en ingresos.controller.js: una rama usaba la tara recien pesada y la otra la
- * guardada en base, de modo que el mismo trailer daba un peso distinto segun
- * por donde entrara el movimiento. Ahora ambas rutas llaman aqui.
+ * La decision de que se guarda vive en calculos/pesos.js como funciones puras;
+ * aqui solo se lee la fila abierta, se aplica el movimiento y se persiste el
+ * resultado. Asi las pruebas de escenario ejercitan la misma logica que corre
+ * en produccion, sin necesidad de base de datos.
  */
 
 const { sql } = require('../database/connection');
 const {
-  determinacionEntrada,
-  determinacionSalida,
-  pesoTrailer,
-  diferenciaDeterminaciones,
-  entero,
+  aplicarTaraVehiculo,
+  aplicarSalida,
+  hayContenedor,
 } = require('../calculos/pesos');
 
 /*
@@ -36,14 +34,6 @@ async function trailerAbierto(pool, trailer) {
 }
 
 /*
- * Acota el UPDATE a la fila leida. Con solo "Trailer = X AND Culminado = 0" un
- * trailer con filas abiertas duplicadas recibiria el update en todas.
- */
-function peticionSobreFila(pool, trailer) {
-  return pool.request().input('Trailer', sql.VarChar, trailer);
-}
-
-/*
  * Acota el UPDATE a la fila abierta mas reciente. La fecha se resuelve dentro
  * del propio SQL en vez de viajar como parametro: Fecha_Entrada puede ser DATE
  * o VARCHAR segun como este declarada la tabla, y pasarla tipada rompia el
@@ -58,113 +48,84 @@ const FILTRO_FILA = `WHERE Trailer = @Trailer
                              WHERE Trailer = @Trailer
                                AND Culminado = 0)`;
 
-/*
- * Campos derivados a partir de como quedaria la fila tras el movimiento.
- * Peso_Trailer pasa a ser el promedio de las determinaciones disponibles.
- */
-function derivados(filaProyectada) {
-  return {
-    entrada: determinacionEntrada(filaProyectada),
-    salida: determinacionSalida(filaProyectada),
-    promedio: pesoTrailer(filaProyectada),
-    diferencia: diferenciaDeterminaciones(filaProyectada),
-  };
+function peticionDerivadas(pool, trailer, fila) {
+  return pool
+    .request()
+    .input('Trailer', sql.VarChar, trailer)
+    .input('taraCab1', sql.Int, fila.taraCab1 ?? null)
+    .input('taraCab2', sql.Int, fila.taraCab2 ?? null)
+    .input('Peso_Trailer_Entrada', sql.Int, fila.Peso_Trailer_Entrada ?? null)
+    .input('Peso_Trailer_Salida', sql.Int, fila.Peso_Trailer_Salida ?? null)
+    .input('Peso_Trailer', sql.Int, fila.Peso_Trailer ?? null)
+    .input('Diferencia_Determinaciones', sql.Int, fila.Diferencia_Determinaciones ?? null);
 }
 
-function conDerivados(peticion, calculo) {
-  return peticion
-    .input('Peso_Trailer_Entrada', sql.Int, calculo.entrada)
-    .input('Peso_Trailer_Salida', sql.Int, calculo.salida)
-    .input('Peso_Trailer', sql.Int, calculo.promedio)
-    .input('Diferencia_Determinaciones', sql.Int, calculo.diferencia);
-}
-
-const SET_DERIVADOS = `Peso_Trailer_Entrada = @Peso_Trailer_Entrada,
+const SET_DERIVADAS = `taraCab1             = @taraCab1,
+                       taraCab2             = @taraCab2,
+                       Peso_Trailer_Entrada = @Peso_Trailer_Entrada,
                        Peso_Trailer_Salida  = @Peso_Trailer_Salida,
                        Peso_Trailer         = @Peso_Trailer,
                        Diferencia_Determinaciones = @Diferencia_Determinaciones`;
 
 /*
- * El cabezote se peso solo, sin trailer. Su tara alimenta la determinacion de
- * entrada si es el que lo trajo (taraCab1 aun vacia) o la de salida si es el
- * que se lo va a llevar (taraCab2).
+ * El vehiculo se peso solo, sin trailer.
  */
-async function registrarTaraCabezote(pool, { trailer, taraCabezote }) {
-  const tara = entero(taraCabezote);
-  if (!trailer || tara === null) return null;
+async function registrarTaraVehiculo(pool, { trailer, taraVehiculo, noContenedor }) {
+  if (!trailer) return null;
 
   const fila = await trailerAbierto(pool, trailer);
   if (!fila) return null;
 
-  const esPrimerCabezote = entero(fila.taraCab1) === null;
-  const columna = esPrimerCabezote ? 'taraCab1' : 'taraCab2';
+  const resultado = aplicarTaraVehiculo(fila, {
+    taraVehiculo,
+    conCarga: hayContenedor(noContenedor),
+  });
 
-  const calculo = derivados({ ...fila, [columna]: tara });
+  await peticionDerivadas(pool, trailer, resultado)
+    .query(`UPDATE Trailers SET ${SET_DERIVADAS} ${FILTRO_FILA}`);
 
-  await conDerivados(peticionSobreFila(pool, trailer), calculo)
-    .input('Tara', sql.Int, tara)
-    .query(`UPDATE Trailers
-               SET ${columna} = @Tara,
-                   ${SET_DERIVADOS}
-             ${FILTRO_FILA}`);
-
-  return { columna, ...calculo };
+  return resultado;
 }
 
 /*
- * El cabezote se lleva el trailer: se registra el peso del conjunto a la salida
- * y se cierra el viaje. taraCab2 NO se toca aqui, viene del pesaje del cabezote
- * solo; sobrescribirla con el peso del conjunto (lo que se hacia antes) dejaba
- * la determinacion de salida en cero.
+ * El vehiculo se lleva el trailer: se cierra el viaje.
  */
 async function cerrarTrailer(pool, {
   trailer,
   placa,
   pesoConjuntoSalida,
-  taraCabezoteSalida,
+  taraVehiculoSalida,
+  noContenedor,
 }) {
   if (!trailer) return null;
 
   const fila = await trailerAbierto(pool, trailer);
   if (!fila) return null;
 
-  const pesoSalida = entero(pesoConjuntoSalida);
-
-  /*
-   * taraCab2 se resuelve aqui y no en el pesaje de entrada del cabezote.
-   * Cuando un vehiculo entra a buscar trailer todavia no se sabe cual se va a
-   * llevar, asi que en ese momento no hay a que fila asociar su tara. Al salir
-   * si se sabe, y para entonces el propio movimiento ya trae sus dos pesajes:
-   * el conjunto con el trailer y el vehiculo solo. Si por alguna razon no
-   * llega, se conserva lo que hubiera en la fila.
-   */
-  const taraSalida = entero(taraCabezoteSalida) ?? entero(fila.taraCab2);
-
-  const calculo = derivados({
-    ...fila,
-    Peso_Salida: pesoSalida,
-    taraCab2: taraSalida,
+  const resultado = aplicarSalida(fila, {
+    placa,
+    pesoConjunto: pesoConjuntoSalida,
+    taraVehiculo: taraVehiculoSalida,
+    conCarga: hayContenedor(noContenedor),
   });
 
-  await conDerivados(peticionSobreFila(pool, trailer), calculo)
+  await peticionDerivadas(pool, trailer, resultado)
     .input('Placa', sql.VarChar, placa)
-    .input('Peso_Salida', sql.Int, pesoSalida)
-    .input('taraCab2', sql.Int, taraSalida)
+    .input('Peso_Salida', sql.Int, resultado.Peso_Salida ?? null)
     .query(`UPDATE Trailers
                SET Fecha_Salida = FORMAT(GETDATE(), 'yyyy-MM-dd'),
                    Hora_Salida  = FORMAT(GETDATE(), 'HH:mm'),
                    Placa_Salida = @Placa,
                    Peso_Salida  = @Peso_Salida,
-                   taraCab2     = @taraCab2,
-                   ${SET_DERIVADOS},
+                   ${SET_DERIVADAS},
                    Culminado    = 1
              ${FILTRO_FILA}`);
 
-  return calculo;
+  return resultado;
 }
 
 module.exports = {
   trailerAbierto,
-  registrarTaraCabezote,
+  registrarTaraVehiculo,
   cerrarTrailer,
 };

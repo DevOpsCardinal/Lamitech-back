@@ -1,14 +1,18 @@
 /*
  * Pruebas del punto unico de calculo. Sin dependencias: node test/pesos.test.js
- * Cada caso que empieza con REGRESION reproduce un bug real que estaba en
+ * Los casos que empiezan con REGRESION reproducen un bug real que estuvo en
  * produccion; si alguno vuelve a fallar, el bug volvio.
  */
 
 const {
-  determinacionEntrada,
-  determinacionSalida,
+  entero,
+  hayContenedor,
+  determinar,
   pesoTrailer,
   diferenciaDeterminaciones,
+  aplicarTaraVehiculo,
+  aplicarSalida,
+  cargaReal,
   vgm,
   conCalculos,
 } = require('../src/calculos/pesos');
@@ -20,7 +24,7 @@ function verificar(descripcion, obtenido, esperado) {
   const ok = JSON.stringify(obtenido) === JSON.stringify(esperado);
   if (ok) {
     pasadas++;
-    console.log(`  ok   ${descripcion}`);
+    console.log(`  ok    ${descripcion}`);
   } else {
     fallas.push(descripcion);
     console.log(`  FALLA ${descripcion}`);
@@ -33,145 +37,166 @@ function grupo(titulo) {
   console.log(`\n${titulo}`);
 }
 
+const CONT = 'MSCU1234567';
+
 /* --------------------------------------------------------------- */
-grupo('Peso del trailer: promedio de las dos determinaciones');
+grupo('entero(): nunca deja pasar NaN a la base');
 
-const viajeCompleto = {
-  Peso_Entrada: 18000, taraCab1: 7000,   // determinacion entrada: 11000
-  Peso_Salida: 18600,  taraCab2: 7500,   // determinacion salida:  11100
-};
+verificar('numero', entero(7000), 7000);
+verificar('texto numerico', entero('7000'), 7000);
+verificar('decimal se redondea', entero(7000.4), 7000);
+verificar('REGRESION null no produce NaN', entero(null), null);
+verificar('REGRESION undefined no produce NaN', entero(undefined), null);
+verificar('REGRESION cadena vacia no produce NaN', entero(''), null);
+verificar('REGRESION texto no numerico no produce NaN', entero('abc'), null);
 
-verificar('determinacion con el cabezote que lo trajo',
-  determinacionEntrada(viajeCompleto), 11000);
-verificar('determinacion con el cabezote que se lo lleva',
-  determinacionSalida(viajeCompleto), 11100);
-verificar('peso = promedio de las dos',
-  pesoTrailer(viajeCompleto), 11050);
+/* --------------------------------------------------------------- */
+grupo('hayContenedor()');
+
+verificar('con numero de contenedor', hayContenedor(CONT), true);
+verificar('vacio', hayContenedor(''), false);
+verificar('nulo', hayContenedor(null), false);
+verificar('solo espacios', hayContenedor('   '), false);
+
+/* --------------------------------------------------------------- */
+grupo('determinar(): despeja el trailer de un pesaje');
+
+verificar('conjunto menos vehiculo',
+  determinar({ conjunto: 18000, taraVehiculo: 7000 }), 11000);
+verificar('acepta texto',
+  determinar({ conjunto: '18000', taraVehiculo: '7000' }), 11000);
+verificar('sin tara del vehiculo no hay determinacion',
+  determinar({ conjunto: 18000, taraVehiculo: null }), null);
+verificar('REGRESION conjunto igual a la tara se descarta',
+  determinar({ conjunto: 18600, taraVehiculo: 18600 }), null);
+verificar('REGRESION resultado negativo se descarta',
+  determinar({ conjunto: 7000, taraVehiculo: 18600 }), null);
+verificar('un extremo cargado no aporta determinacion',
+  determinar({ conjunto: 40500, taraVehiculo: 7500, conCarga: true }), null);
+
+/* --------------------------------------------------------------- */
+grupo('pesoTrailer(): promedio de las determinaciones guardadas');
+
+verificar('promedio de las dos',
+  pesoTrailer({ Peso_Trailer_Entrada: 11000, Peso_Trailer_Salida: 11100 }), 11050);
+verificar('promedio impar se redondea',
+  pesoTrailer({ Peso_Trailer_Entrada: 11000, Peso_Trailer_Salida: 11101 }), 11051);
+verificar('con una sola usa esa, no promedia contra cero',
+  pesoTrailer({ Peso_Trailer_Entrada: 11000, Peso_Trailer_Salida: null }), 11000);
+verificar('solo la de salida',
+  pesoTrailer({ Peso_Trailer_Entrada: null, Peso_Trailer_Salida: 11100 }), 11100);
+verificar('sin ninguna devuelve null, nunca cero',
+  pesoTrailer({ Peso_Trailer_Entrada: null, Peso_Trailer_Salida: null }), null);
+
 verificar('diferencia entre determinaciones',
-  diferenciaDeterminaciones(viajeCompleto), 100);
-
-verificar('promedio impar se redondea a entero',
-  pesoTrailer({ Peso_Entrada: 18000, taraCab1: 7000, Peso_Salida: 18601, taraCab2: 7500 }), 11051);
-
-/* --------------------------------------------------------------- */
-grupo('Con una sola determinacion disponible');
-
-verificar('solo entrada: usa esa, no promedia contra cero',
-  pesoTrailer({ Peso_Entrada: 18000, taraCab1: 7000 }), 11000);
-verificar('solo salida: usa esa',
-  pesoTrailer({ Peso_Salida: 18600, taraCab2: 7500 }), 11100);
+  diferenciaDeterminaciones({ Peso_Trailer_Entrada: 11000, Peso_Trailer_Salida: 11100 }), 100);
 verificar('con una sola no hay diferencia que reportar',
-  diferenciaDeterminaciones({ Peso_Entrada: 18000, taraCab1: 7000 }), null);
-
-/* --------------------------------------------------------------- */
-grupo('Sin datos suficientes: null, nunca 0 ni NaN');
-
-verificar('fila recien creada, sin taras',
-  pesoTrailer({ Peso_Entrada: 18000 }), null);
-verificar('fila vacia',
-  pesoTrailer({}), null);
+  diferenciaDeterminaciones({ Peso_Trailer_Entrada: 11000, Peso_Trailer_Salida: null }), null);
 
 /* --------------------------------------------------------------- */
 grupo('REGRESION: la formula ya no es recursiva');
 
-// Antes: Peso_Trailer = Peso_Entrada - (tara + Peso_Trailer), asi que el
+// Antes: Peso_Trailer = Peso_Entrada - (tara + Peso_Trailer), de modo que el
 // resultado cambiaba en cada pasada segun el valor anterior.
-const conBasura = { ...viajeCompleto, Peso_Trailer: 999999 };
+const conBasura = {
+  Peso_Trailer_Entrada: 11000, Peso_Trailer_Salida: 11100, Peso_Trailer: 999999,
+};
 verificar('un Peso_Trailer previo absurdo no altera el resultado',
   pesoTrailer(conBasura), 11050);
-verificar('un Peso_Trailer previo en cero tampoco',
-  pesoTrailer({ ...viajeCompleto, Peso_Trailer: 0 }), 11050);
 
 /* --------------------------------------------------------------- */
-grupo('REGRESION: parseInt(null) producia NaN en la base');
+grupo('aplicarTaraVehiculo(): el vehiculo se peso solo');
 
-verificar('taraCab1 nula no genera NaN',
-  determinacionEntrada({ Peso_Entrada: 18000, taraCab1: null }), null);
-verificar('taraCab1 indefinida no genera NaN',
-  determinacionEntrada({ Peso_Entrada: 18000 }), null);
-verificar('cadena vacia no genera NaN',
-  determinacionEntrada({ Peso_Entrada: 18000, taraCab1: '' }), null);
-verificar('texto no numerico no genera NaN',
-  determinacionEntrada({ Peso_Entrada: 18000, taraCab1: 'abc' }), null);
+const filaBase = {
+  Peso_Entrada: 18000, Peso_Salida: 0,
+  taraCab1: null, taraCab2: null,
+  Peso_Trailer_Entrada: null, Peso_Trailer_Salida: null,
+};
 
-/* --------------------------------------------------------------- */
-grupo('REGRESION: taraCab2 pisada con el peso del conjunto');
+const trasPrimerVehiculo = aplicarTaraVehiculo(filaBase, { taraVehiculo: 7000 });
+verificar('el primero llena taraCab1', trasPrimerVehiculo.taraCab1, 7000);
+verificar('y la determinacion de entrada', trasPrimerVehiculo.Peso_Trailer_Entrada, 11000);
+verificar('el peso queda en esa determinacion', trasPrimerVehiculo.Peso_Trailer, 11000);
 
-// Al cerrar el viaje se escribia taraCab2 = Peso_Salida, y la determinacion
-// de salida quedaba en cero.
-verificar('conjunto igual a la tara del cabezote se descarta',
-  determinacionSalida({ Peso_Salida: 18600, taraCab2: 18600 }), null);
-verificar('tara mayor que el conjunto se descarta',
-  determinacionSalida({ Peso_Salida: 7000, taraCab2: 18600 }), null);
-verificar('una determinacion invalida no arrastra el promedio',
-  pesoTrailer({ Peso_Entrada: 18000, taraCab1: 7000, Peso_Salida: 18600, taraCab2: 18600 }), 11000);
+const trasSegundoVehiculo = aplicarTaraVehiculo(trasPrimerVehiculo, { taraVehiculo: 7500 });
+verificar('REGRESION el segundo no pisa taraCab1', trasSegundoVehiculo.taraCab1, 7000);
+verificar('el segundo llena taraCab2', trasSegundoVehiculo.taraCab2, 7500);
+
+verificar('si el trailer venia cargado no se registra determinacion',
+  aplicarTaraVehiculo({ ...filaBase, Peso_Entrada: 40000 },
+    { taraVehiculo: 7000, conCarga: true }).Peso_Trailer_Entrada, null);
 
 /* --------------------------------------------------------------- */
-grupo('REGRESION: el trailer que se lleva no se sabe hasta la salida');
+grupo('aplicarSalida(): el vehiculo se lleva el trailer');
 
-// Cuando un vehiculo entra a buscar trailer no se sabe cual se llevara, asi
-// que taraCab2 no puede registrarse en ese pesaje: se resuelve al salir, con
-// los dos pesajes que trae el propio movimiento.
-verificar('sin taraCab2 solo hay determinacion de entrada',
-  pesoTrailer({ Peso_Entrada: 18000, taraCab1: 7000, Peso_Salida: 18600 }), 11000);
-verificar('con taraCab2 resuelta en la salida ya promedia',
-  pesoTrailer({ Peso_Entrada: 18000, taraCab1: 7000, Peso_Salida: 18600, taraCab2: 7500 }), 11050);
-verificar('la determinacion de salida equivale al neto del movimiento',
-  determinacionSalida({ Peso_Salida: 18600, taraCab2: 7500 }), 18600 - 7500);
+const cerrada = aplicarSalida(trasPrimerVehiculo, {
+  placa: 'XYZ-201', pesoConjunto: 18600, taraVehiculo: 7500,
+});
+verificar('registra el peso de salida', cerrada.Peso_Salida, 18600);
+verificar('REGRESION taraCab2 no se pisa con el peso del conjunto', cerrada.taraCab2, 7500);
+verificar('determinacion de salida', cerrada.Peso_Trailer_Salida, 11100);
+verificar('PESO TRAILER es el promedio', cerrada.Peso_Trailer, 11050);
+verificar('cierra el viaje', cerrada.Culminado, true);
+
+// REGRESION: al entrar un vehiculo no se sabe que trailer se llevara, asi que
+// taraCab2 se resuelve al salir, con los dos pesajes del propio movimiento.
+verificar('sin taraCab2 previa la resuelve la salida',
+  aplicarSalida(trasPrimerVehiculo,
+    { placa: 'X', pesoConjunto: 18600, taraVehiculo: 7500 }).taraCab2, 7500);
+verificar('si la salida no trae tara, conserva la que hubiera',
+  aplicarSalida(trasSegundoVehiculo,
+    { placa: 'X', pesoConjunto: 18600, taraVehiculo: null }).taraCab2, 7500);
 
 /* --------------------------------------------------------------- */
-grupo('Tolerancia de tipos: SQL Server puede devolver texto');
+grupo('cargaReal(): descuenta el trailer cuando corresponde');
 
-verificar('pesos como string se interpretan igual',
-  pesoTrailer({ Peso_Entrada: '18000', taraCab1: '7000', Peso_Salida: '18600', taraCab2: '7500' }), 11050);
+verificar('movimiento normal: la carga es el neto',
+  cargaReal({ neto: 22000, recogeTrailer: false }), 22000);
+verificar('REGRESION recogiendo trailer se descuenta su peso',
+  cargaReal({ neto: 33000, pesoTrailer: 11000, recogeTrailer: true, noContenedor: CONT }), 22000);
+verificar('REGRESION trailer vacio no genera carga fantasma',
+  cargaReal({ neto: 11100, pesoTrailer: 11050, recogeTrailer: true, noContenedor: '' }), 0);
+verificar('sin peso de trailer conocido no se inventa carga',
+  cargaReal({ neto: 33000, pesoTrailer: null, recogeTrailer: true, noContenedor: CONT }), null);
+verificar('nunca devuelve carga negativa',
+  cargaReal({ neto: 10000, pesoTrailer: 11000, recogeTrailer: true, noContenedor: CONT }), 0);
 
 /* --------------------------------------------------------------- */
-grupo('VGM (SOLAS cap. VI regla 2) = tara del contenedor + carga');
+grupo('vgm(): SOLAS cap. VI regla 2 = tara del contenedor + carga');
 
-const CONT = 'MSCU1234567';
-
-verificar('caso normal', vgm({ taraContenedor: 4000, neto: 22000, noContenedor: CONT }), 26000);
-verificar('no incluye cabezote ni trailer: solo suma los dos valores',
-  vgm({ taraContenedor: 3800, neto: 0, noContenedor: CONT }), 3800);
-verificar('sin tara de contenedor no se declara VGM',
-  vgm({ taraContenedor: null, neto: 22000, noContenedor: CONT }), null);
-verificar('sin neto no se declara VGM',
-  vgm({ taraContenedor: 4000, neto: null, noContenedor: CONT }), null);
-verificar('tara como string',
-  vgm({ taraContenedor: '4000', neto: '22000', noContenedor: CONT }), 26000);
+verificar('caso normal', vgm({ taraContenedor: 4000, carga: 22000, noContenedor: CONT }), 26000);
+verificar('no incluye vehiculo ni trailer, solo suma los dos valores',
+  vgm({ taraContenedor: 3800, carga: 0, noContenedor: CONT }), 3800);
+verificar('sin tara de contenedor no se declara',
+  vgm({ taraContenedor: null, carga: 22000, noContenedor: CONT }), null);
+verificar('sin carga resuelta no se declara',
+  vgm({ taraContenedor: 4000, carga: null, noContenedor: CONT }), null);
+verificar('acepta texto', vgm({ taraContenedor: '4000', carga: '22000', noContenedor: CONT }), 26000);
 
 // REGRESION: un movimiento de trailer vacio emitia un VGM igual al peso del
 // trailer, porque la tara del contenedor llegaba en cero y se sumaba al neto.
-verificar('REGRESION movimiento sin contenedor no declara VGM',
-  vgm({ taraContenedor: 0, neto: 11100, noContenedor: '' }), null);
-verificar('REGRESION contenedor nulo no declara VGM',
-  vgm({ taraContenedor: 0, neto: 11100, noContenedor: null }), null);
-verificar('REGRESION contenedor en blancos no declara VGM',
-  vgm({ taraContenedor: 4000, neto: 22000, noContenedor: '   ' }), null);
+verificar('REGRESION sin contenedor no se declara VGM',
+  vgm({ taraContenedor: 0, carga: 11100, noContenedor: '' }), null);
+verificar('REGRESION contenedor nulo no se declara VGM',
+  vgm({ taraContenedor: 0, carga: 11100, noContenedor: null }), null);
+verificar('REGRESION contenedor en blancos no se declara VGM',
+  vgm({ taraContenedor: 4000, carga: 22000, noContenedor: '   ' }), null);
 
 /* --------------------------------------------------------------- */
-grupo('conCalculos: filas historicas anteriores a la migracion');
+grupo('conCalculos(): filas historicas anteriores a la migracion');
 
-const historicaRecuperable = {
-  Trailer: 'R-100', Peso_Entrada: 18000, taraCab1: 7000,
-  Peso_Salida: 18600, taraCab2: 7500,
-  Peso_Trailer: 3500,   // valor corrupto de la formula vieja
-};
-verificar('recalcula el peso corrupto a partir de los pesos originales',
-  conCalculos(historicaRecuperable).Peso_Trailer, 11050);
-verificar('expone la determinacion de entrada',
-  conCalculos(historicaRecuperable).Peso_Trailer_Entrada, 11000);
+verificar('recalcula el peso corrupto desde las determinaciones',
+  conCalculos({ Peso_Trailer_Entrada: 11000, Peso_Trailer_Salida: 11100, Peso_Trailer: 3500 })
+    .Peso_Trailer, 11050);
 verificar('expone la diferencia',
-  conCalculos(historicaRecuperable).Diferencia_Determinaciones, 100);
-
-const historicaSinPesos = { Trailer: 'R-200', Peso_Trailer: 4200 };
+  conCalculos({ Peso_Trailer_Entrada: 11000, Peso_Trailer_Salida: 11100 })
+    .Diferencia_Determinaciones, 100);
 verificar('si no se puede recalcular, respeta el valor guardado',
-  conCalculos(historicaSinPesos).Peso_Trailer, 4200);
-
+  conCalculos({ Trailer: 'R-200', Peso_Trailer: 4200 }).Peso_Trailer, 4200);
 verificar('null se propaga sin romper', conCalculos(null), null);
 
 /* --------------------------------------------------------------- */
-console.log(`\n${'-'.repeat(60)}`);
+console.log(`\n${'-'.repeat(62)}`);
 if (fallas.length === 0) {
   console.log(`${pasadas} pruebas, todas pasaron.`);
   process.exit(0);

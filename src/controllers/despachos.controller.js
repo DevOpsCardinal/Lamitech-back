@@ -3,8 +3,8 @@ const {getConnection, sql} = require('../database/connection')
 const {sendMail} = require('../mail/transito')
 const {CrearPdf} = require('../mail/crearArchivoPdf')
 const {createSftp} = require('../mail/sftp')
-const {cerrarTrailer, registrarTaraCabezote} = require('../servicios/trailer')
-const {vgm} = require('../calculos/pesos')
+const {cerrarTrailer, registrarTaraVehiculo, trailerAbierto} = require('../servicios/trailer')
+const {vgm, cargaReal} = require('../calculos/pesos')
 
 async function tiquete(){
    const pool = await getConnection();
@@ -164,18 +164,37 @@ async function createDespacho(req, res){
 
       const { bruto, tara, neto, operario, nickOperario, fechaIngreso, horaIngreso, procesoRecoger, procesoDescargar } = req.body;
 
+      // El VGM descuenta el peso del trailer cuando el vehiculo entro sin el y
+      // sale con el, asi que hay que conocerlo antes de insertar el tiquete.
+      let pesoTrailerConocido = null;
+      if (procesoRecoger == true) {
+         try {
+            const filaTrailer = await trailerAbierto(pool, n_R);
+            pesoTrailerConocido = filaTrailer?.Peso_Trailer ?? null;
+         } catch (errorTrailer) {
+            console.error('No se pudo leer el peso del trailer:', errorTrailer);
+         }
+      }
+
+      const cargaDelMovimiento = cargaReal({
+         neto,
+         pesoTrailer: pesoTrailerConocido,
+         recogeTrailer: procesoRecoger == true,
+         noContenedor: n_contenedor,
+      });
+
       const query = `
           INSERT INTO Despachos
           (Placa, Conductor, Cedula, Producto, Planta, Cliente, 
            Destino, Transportadora, Fecha_Peso_Vacio, Hora_Peso_Vacio, 
            Fecha_Peso_Lleno, Hora_Peso_Lleno, Bruto, Tara, Neto, No_Tiquete, Operario, Nick_Operario, 
-           No_Shipment, No_Sello, No_R, No_Contenedor, Observaciones, Tara_Contenedor, Responsable, Neto_Contenedor, Fecha_Entrada, Vgm)
+           No_Shipment, No_Sello, No_R, No_Contenedor, Observaciones, Tara_Contenedor, Responsable, Neto_Contenedor, Fecha_Entrada, Vgm, Carga)
           VALUES 
           (@Placa, @Conductor, @Cedula, @Producto, @Planta, @Cliente, 
            @Destino, @Transportadora, @Fecha_Peso_Vacio, @Hora_Peso_Vacio, 
            FORMAT(GETDATE(), 'yyyy-MM-dd'), FORMAT(GETDATE(), 'HH:mm'),
            @Bruto, @Tara, @Neto, @No_Tiquete, @Operario, @Nick_Operario, 
-           @No_Shipment, @No_Sello, @No_R, @No_Contenedor, @Observaciones, @Tara_Contenedor, @Responsable, @Neto_Contenedor, @Fecha_Entrada, @Vgm)`;
+           @No_Shipment, @No_Sello, @No_R, @No_Contenedor, @Observaciones, @Tara_Contenedor, @Responsable, @Neto_Contenedor, @Fecha_Entrada, @Vgm, @Carga)`;
 
       const response = await pool.request()
           .input("Placa", sql.VarChar, placa)
@@ -204,7 +223,8 @@ async function createDespacho(req, res){
           .input("Neto_Contenedor", sql.Int, neto == 'NaN' || neto == null  || neto == 'null' ? 0: neto)
           // VGM (SOLAS VI/2) = tara del contenedor + carga. Se persiste el valor
           // emitido para que la reimpresion muestre lo declarado, no un recalculo.
-          .input('Vgm', sql.Int, vgm({ taraContenedor: tara_contenedor, neto, noContenedor: n_contenedor }))
+          .input('Carga', sql.Int, cargaDelMovimiento)
+          .input('Vgm', sql.Int, vgm({ taraContenedor: tara_contenedor, carga: cargaDelMovimiento, noContenedor: n_contenedor }))
           .input(
             'Fecha_Entrada',
             sql.VarChar,
@@ -226,23 +246,25 @@ async function createDespacho(req, res){
           // llegaba a correr y el consecutivo de tiquete se repetia.
           try {
              if (procesoRecoger == true) {
-                // Se lleva el trailer. En un despacho el conjunto con trailer
-                // es el bruto y el vehiculo solo es la tara.
+                // Se lleva el trailer. El conjunto con trailer es bruto y el
+                // vehiculo solo es tara (en la otra ruta van al reves).
                 await cerrarTrailer(pool, {
                    trailer: n_R,
                    placa,
                    pesoConjuntoSalida: bruto,
-                   taraCabezoteSalida: tara,
+                   taraVehiculoSalida: tara,
+                   noContenedor: n_contenedor,
                 });
              } else if (procesoDescargar == true) {
                 // La fila del trailer se crea en el primer pesaje (transito).
              } else {
-                // Cabezote pesado solo: alimenta una de las dos determinaciones.
-                // En un despacho el pesaje que se acaba de hacer es el bruto
-                // (el segundo), no la tara, que viene arrastrada del transito.
-                await registrarTaraCabezote(pool, {
+                // Vehiculo pesado solo: alimenta una determinacion, salvo que
+                // el trailer llevara contenedor, porque entonces la resta deja
+                // trailer + mercancia y no se pueden separar.
+                await registrarTaraVehiculo(pool, {
                    trailer: n_R,
-                   taraCabezote: bruto,
+                   taraVehiculo: bruto,
+                   noContenedor: n_contenedor,
                 });
              }
           } catch (errorTrailer) {
